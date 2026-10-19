@@ -25,7 +25,14 @@ jobs:
           echo "Link found: $HREF"
           URL=$(python3 -c "import sys,urllib.parse as u; print(u.urljoin(sys.argv[1], sys.argv[2]))" "$PAGE" "$HREF")
           echo "Downloading: $URL"
-          curl -fL -o data/region.osm.pbf "$URL"
+          if ! curl -fL -o data/region.osm.pbf "$URL"; then
+            echo "--- Server answer for that address:"
+            curl -sL -D - -o /tmp/body.txt "$URL" | head -15; head -c 600 /tmp/body.txt; echo
+            echo "--- Trying the openstreetmap.fr mirror"
+            M="https://download.openstreetmap.fr/extracts/$(echo "$R" | sed 's#^europe/great-britain#europe/great_britain#').osm.pbf"
+            echo "Downloading: $M"
+            curl -fL -o data/region.osm.pbf "$M"
+          fi
           ls -l data
       - name: Build the routing tiles with Valhalla
         run: |
