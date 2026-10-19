@@ -12,10 +12,10 @@ jobs:
         with:
           gradle-version: 8.14.4
           build-root-directory: HeadUnitLauncher
-      - name: Build debug APK
+      - name: Build release APK
         working-directory: HeadUnitLauncher
-        run: gradle :app:assembleDebug -PtomtomApiKey="${{ secrets.TOMTOM_API_KEY }}"
+        run: gradle :app:assembleRelease -PtomtomApiKey="${{ secrets.TOMTOM_API_KEY }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: HeadUnitLauncher-debug-apk
-          path: HeadUnitLauncher/app/build/outputs/apk/debug/*.apk
+          name: HeadUnitLauncher-apk
+          path: HeadUnitLauncher/app/build/outputs/apk/release/*.apk
