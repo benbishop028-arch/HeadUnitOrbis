@@ -17,14 +17,15 @@ jobs:
           mkdir -p data
           R="${{ inputs.region }}"
           case "$R" in europe/*) ;; *) R="europe/great-britain/$R" ;; esac
-          URL="https://download.geofabrik.de/$R-latest.osm.pbf"
+          NAME=$(basename "$R")
+          PAGE="https://download.geofabrik.de/$(dirname "$R").html"
+          # take the real link from Geofabrik's own page instead of guessing the path
+          HREF=$(curl -sL "$PAGE" | grep -o "href=\"[^\"]*$NAME-latest.osm.pbf\"" | head -1 | sed 's/^href="//; s/"$//')
+          echo "Page: $PAGE"
+          echo "Link found: $HREF"
+          URL=$(python3 -c "import sys,urllib.parse as u; print(u.urljoin(sys.argv[1], sys.argv[2]))" "$PAGE" "$HREF")
           echo "Downloading: $URL"
-          if ! curl -fL -o data/region.osm.pbf "$URL"; then
-            echo "NOT FOUND: $URL"
-            echo "Regions that exist under that folder:"
-            curl -sL "https://download.geofabrik.de/$(dirname "$R").html" | grep -o '[a-z0-9-]*-latest.osm.pbf' | sort -u
-            exit 1
-          fi
+          curl -fL -o data/region.osm.pbf "$URL"
           ls -l data
       - name: Build the routing tiles with Valhalla
         run: |
