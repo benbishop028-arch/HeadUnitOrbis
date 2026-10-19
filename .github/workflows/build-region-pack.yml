@@ -53,6 +53,69 @@ jobs:
             valhalla_build_extract -c valhalla.json -v
           '
           ls -l data
+      - name: Build a search list of streets, shops and places
+        run: |
+          osmium tags-filter data/region.osm.pbf w/highway nwr/amenity nwr/shop nwr/tourism nwr/leisure nwr/office nwr/railway=station nwr/place -o data/named.osm.pbf --overwrite
+          osmium export data/named.osm.pbf -f geojsonseq --geometry-types=point,linestring,polygon -o data/named.geojsonseq --overwrite
+          python3 - <<'PY'
+          import json
+          roads = {"motorway","trunk","primary","secondary","tertiary","unclassified","residential","living_street","pedestrian","road","motorway_link","trunk_link","primary_link","secondary_link"}
+          seen = set(); n = 0
+          def mid(g):
+              c = g["coordinates"]
+              if g["type"] == "Point": return c[1], c[0]
+              if g["type"] == "LineString": p = c[len(c)//2]; return p[1], p[0]
+              if g["type"] == "Polygon": p = c[0][0]; return p[1], p[0]
+              return None
+          with open("data/named.geojsonseq", encoding="utf-8") as f, open("data/places.tsv", "w", encoding="utf-8") as out:
+              for line in f:
+                  line = line.strip().lstrip("\x1e")
+                  if not line: continue
+                  try: ft = json.loads(line)
+                  except Exception: continue
+                  pr = ft.get("properties") or {}
+                  name = (pr.get("name") or "").replace("\t", " ").strip()
+                  if not name or not ft.get("geometry"): continue
+                  hw = pr.get("highway")
+                  if hw:
+                      if hw not in roads: continue
+                      kind = "Street"
+                  else:
+                      kind = None
+                      for k in ("place", "amenity", "shop", "tourism", "leisure", "office", "railway"):
+                          if pr.get(k): kind = pr[k].replace("_", " ").capitalize(); break
+                      if kind is None: continue
+                      if kind in ("Yes", "Place of worship") and False: continue
+                  m = mid(ft["geometry"])
+                  if not m: continue
+                  key = (name.lower(), kind, round(m[0], 2), round(m[1], 2))
+                  if key in seen: continue
+                  seen.add(key)
+                  out.write("%s\t%s\t%.5f\t%.5f\n" % (name, kind, m[0], m[1])); n += 1
+          print("places written:", n)
+          PY
+          ls -l data/places.tsv
+          rm -f data/named.osm.pbf data/named.geojsonseq
+      - name: Build the offline map (planetiler)
+        continue-on-error: true
+        run: |
+          docker run --rm -e JAVA_TOOL_OPTIONS="-Xmx6g" -v "$PWD/data:/data" ghcr.io/onthegomap/planetiler:latest \
+            --osm-path=/data/region.osm.pbf --output=/data/map.pmtiles --download --download_dir=/data/sources \
+            --force --maxzoom=14 --fetch-wikidata=false
+          ls -l data/map.pmtiles
+      - name: Fonts for the map labels
+        continue-on-error: true
+        run: |
+          curl -fL -o fonts-src.zip https://github.com/openmaptiles/fonts/releases/download/v2.0/v2.0.zip
+          mkdir -p fsrc fontout
+          unzip -q fonts-src.zip -d fsrc
+          for f in "Noto Sans Regular" "Noto Sans Bold"; do
+            d=$(find fsrc -type d -name "$f" | head -1)
+            echo "$f -> $d"
+            cp -r "$d" "fontout/$(echo "$f" | tr -d ' ')"
+          done
+          (cd fontout && zip -qr ../data/fonts.zip .)
+          ls -l data/fonts.zip
       - uses: actions/upload-artifact@v4
         with:
           name: region-pack
@@ -60,3 +123,6 @@ jobs:
             data/tiles.tar
             data/admins.sqlite
             data/valhalla.json
+            data/places.tsv
+            data/map.pmtiles
+            data/fonts.zip
