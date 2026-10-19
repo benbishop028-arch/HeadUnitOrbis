@@ -4,6 +4,13 @@ name: Build offline region pack
 on:
   workflow_dispatch:
     inputs:
+      parts:
+        description: "What to build: everything, or only the house number and postcode lists (much quicker, keeps the rest of the release as it is)"
+        type: choice
+        options:
+          - everything
+          - addresses-only
+        default: everything
       tag:
         description: "Name of the release to publish the files to (becomes the end of the download address)"
         default: "pack-ew"
@@ -75,6 +82,7 @@ jobs:
           rm data/gb.osm.pbf
           ls -l data
       - name: Build the routing tiles with Valhalla
+        if: ${{ inputs.parts == 'everything' }}
         run: |
           docker run --rm -v "$PWD/data:/data" --entrypoint /bin/bash ghcr.io/valhalla/valhalla:latest -c '
             set -e
@@ -87,6 +95,7 @@ jobs:
           '
           ls -l data
       - name: Build a search list of streets, shops and places
+        if: ${{ inputs.parts == 'everything' }}
         run: |
           osmium tags-filter data/region.osm.pbf w/highway nwr/amenity nwr/shop nwr/tourism nwr/leisure nwr/office nwr/railway=station nwr/place -o data/named.osm.pbf --overwrite
           osmium export data/named.osm.pbf -f geojsonseq --geometry-types=point,linestring,polygon -o data/named.geojsonseq --overwrite
@@ -129,7 +138,54 @@ jobs:
           PY
           ls -l data/places.tsv
           rm -f data/named.osm.pbf data/named.geojsonseq
+      - name: Build house number and postcode lists
+        run: |
+          osmium tags-filter data/region.osm.pbf nwr/addr:housenumber -o data/addr.osm.pbf --overwrite
+          osmium export data/addr.osm.pbf -f geojsonseq --geometry-types=point,polygon -o data/addr.geojsonseq --overwrite
+          python3 - <<'PY'
+          import json
+          seen = set(); pcs = {}; n = 0
+          def pt(g):
+              c = g["coordinates"]
+              if g["type"] == "Point": return c[1], c[0]
+              if g["type"] == "Polygon":
+                  r = c[0]; k = len(r) - 1 if len(r) > 1 else 1
+                  return sum(p[1] for p in r[:k]) / k, sum(p[0] for p in r[:k]) / k
+              return None
+          def key(s): return "".join(ch.lower() if ch < "\x80" else ch for ch in s)
+          with open("data/addr.geojsonseq", encoding="utf-8") as f, open("data/addr.unsorted", "w", encoding="utf-8") as out:
+              for line in f:
+                  line = line.strip().lstrip("\x1e")
+                  if not line: continue
+                  try: ft = json.loads(line)
+                  except Exception: continue
+                  pr = ft.get("properties") or {}
+                  num = (pr.get("addr:housenumber") or "").replace("\t", " ").strip()
+                  street = (pr.get("addr:street") or pr.get("addr:place") or "").replace("\t", " ").strip()
+                  if not num or not street or not ft.get("geometry"): continue
+                  p = pt(ft["geometry"])
+                  if not p: continue
+                  pc = (pr.get("addr:postcode") or "").replace("\t", " ").strip().upper()
+                  h = hash((key(street), num.lower(), round(p[0], 4), round(p[1], 4)))
+                  if h in seen: continue
+                  seen.add(h)
+                  out.write("%s\t%s\t%s\t%.5f\t%.5f\t%s\n" % (key(street), street, num, p[0], p[1], pc)); n += 1
+                  if pc:
+                      a = pcs.get(pc)
+                      if a: a[0] += p[0]; a[1] += p[1]; a[2] += 1
+                      else: pcs[pc] = [p[0], p[1], 1]
+          with open("data/postcodes.tsv", "w", encoding="utf-8") as o:
+              for pc in sorted(pcs, key=lambda x: x.replace(" ", "")):
+                  a = pcs[pc]
+                  o.write("%s\t%s\t%.5f\t%.5f\n" % (pc.replace(" ", "").lower(), pc, a[0] / a[2], a[1] / a[2]))
+          print("addresses:", n, "postcodes:", len(pcs))
+          PY
+          # sort by street name (plain byte order, so the app can search it), then drop the sort column
+          LC_ALL=C sort -S 4G -T data -t "$(printf '\t')" -k1,1 data/addr.unsorted | cut -f2- > data/addresses.tsv
+          rm -f data/addr.unsorted data/addr.osm.pbf data/addr.geojsonseq
+          ls -l data/addresses.tsv data/postcodes.tsv
       - name: Build the offline map (planetiler)
+        if: ${{ inputs.parts == 'everything' }}
         continue-on-error: true
         run: |
           docker run --rm -e JAVA_TOOL_OPTIONS="-Xmx10g" -v "$PWD/data:/data" ghcr.io/onthegomap/planetiler:latest \
@@ -137,6 +193,7 @@ jobs:
             --force --maxzoom=14 --fetch-wikidata=false
           ls -l data/map.pmtiles
       - name: Fonts for the map labels
+        if: ${{ inputs.parts == 'everything' }}
         continue-on-error: true
         run: |
           curl -fL -o fonts-src.zip https://github.com/openmaptiles/fonts/releases/download/v2.0/v2.0.zip
@@ -155,13 +212,13 @@ jobs:
         run: |
           TAG="${{ inputs.tag }}"
           # GitHub refuses release files of 2 GB or more, so a bigger file is cut into parts (the app joins them again)
-          for big in tiles.tar map.pmtiles; do
+          for big in tiles.tar map.pmtiles addresses.tsv; do
             if [ -f "data/$big" ] && [ "$(stat -c%s data/$big)" -gt 1900000000 ]; then
               split -b 1800M -d -a 2 "data/$big" "data/$big.part" && rm "data/$big"
             fi
           done
           FILES=""
-          for f in data/tiles.tar data/tiles.tar.part* data/admins.sqlite data/valhalla.json data/places.tsv data/map.pmtiles data/fonts.zip; do [ -f "$f" ] && FILES="$FILES $f"; done
+          for f in data/tiles.tar data/tiles.tar.part* data/admins.sqlite data/valhalla.json data/places.tsv data/map.pmtiles data/fonts.zip data/addresses.tsv data/addresses.tsv.part* data/postcodes.tsv; do [ -f "$f" ] && FILES="$FILES $f"; done
           ls -l $FILES
           gh release create "$TAG" --repo "${{ github.repository }}" --title "$TAG" --notes "Offline pack for the head unit launcher" 2>/dev/null || true
           gh release upload "$TAG" $FILES --repo "${{ github.repository }}" --clobber
