@@ -5,9 +5,9 @@ name: Build offline region pack
 on:
   workflow_dispatch:
     inputs:
-      region:
-        description: "Geofabrik path of the region, e.g. europe/great-britain/england/hampshire"
-        default: "europe/great-britain/england/hampshire"
+      bbox:
+        description: "Box to cut out of England: west,south,east,north (default covers Hampshire)"
+        default: "-1.96,50.70,-0.70,51.39"
 jobs:
   pack:
     runs-on: ubuntu-latest
@@ -15,24 +15,18 @@ jobs:
       - name: Download the OpenStreetMap extract
         run: |
           mkdir -p data
-          R="${{ inputs.region }}"
-          case "$R" in europe/*) ;; *) R="europe/great-britain/$R" ;; esac
-          NAME=$(basename "$R")
-          PAGE="https://download.geofabrik.de/$(dirname "$R").html"
-          # take the real link from Geofabrik's own page instead of guessing the path
-          HREF=$(curl -sL "$PAGE" | grep -o "href=\"[^\"]*$NAME-latest.osm.pbf\"" | head -1 | sed 's/^href="//; s/"$//')
-          echo "Page: $PAGE"
-          echo "Link found: $HREF"
-          URL=$(python3 -c "import sys,urllib.parse as u; print(u.urljoin(sys.argv[1], sys.argv[2]))" "$PAGE" "$HREF")
-          echo "Downloading: $URL"
-          if ! curl -fL -o data/region.osm.pbf "$URL"; then
-            echo "--- Server answer for that address:"
-            curl -sL -D - -o /tmp/body.txt "$URL" | head -15; head -c 600 /tmp/body.txt; echo
-            echo "--- Trying the openstreetmap.fr mirror"
-            M="https://download.openstreetmap.fr/extracts/$(echo "$R" | sed 's#^europe/great-britain#europe/great_britain#').osm.pbf"
-            echo "Downloading: $M"
-            curl -fL -o data/region.osm.pbf "$M"
-          fi
+          BBOX="${{ inputs.bbox }}"
+          echo "Cutting a box of England: $BBOX"
+          # the county files are not being served right now, so take all of England and cut our box out of it
+          curl -fL -o data/england.osm.pbf "https://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf" || {
+            echo "--- England file also failed. Server answer:"
+            curl -sI "https://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf" | head -12
+            exit 1
+          }
+          ls -l data
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
+          osmium extract -b "$BBOX" --strategy=smart -o data/region.osm.pbf data/england.osm.pbf
+          rm data/england.osm.pbf
           ls -l data
       - name: Build the routing tiles with Valhalla
         run: |
