@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       region:
-        description: "Geofabrik path of the region, e.g. england/hampshire or england/south-east"
-        default: "england/hampshire"
+        description: "Geofabrik path of the region, e.g. europe/great-britain/england/hampshire"
+        default: "europe/great-britain/england/hampshire"
 jobs:
   pack:
     runs-on: ubuntu-latest
