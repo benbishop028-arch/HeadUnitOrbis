@@ -154,8 +154,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ inputs.tag }}"
+          # GitHub refuses release files of 2 GB or more, so a bigger file is cut into parts (the app joins them again)
+          for big in tiles.tar map.pmtiles; do
+            if [ -f "data/$big" ] && [ "$(stat -c%s data/$big)" -gt 1900000000 ]; then
+              split -b 1800M -d -a 2 "data/$big" "data/$big.part" && rm "data/$big"
+            fi
+          done
           FILES=""
-          for f in tiles.tar admins.sqlite valhalla.json places.tsv map.pmtiles fonts.zip; do [ -f "data/$f" ] && FILES="$FILES data/$f"; done
+          for f in data/tiles.tar data/tiles.tar.part* data/admins.sqlite data/valhalla.json data/places.tsv data/map.pmtiles data/fonts.zip; do [ -f "$f" ] && FILES="$FILES $f"; done
           ls -l $FILES
           gh release create "$TAG" --repo "${{ github.repository }}" --title "$TAG" --notes "Offline pack for the head unit launcher" 2>/dev/null || true
           gh release upload "$TAG" $FILES --repo "${{ github.repository }}" --clobber
