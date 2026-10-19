@@ -16,17 +16,30 @@ jobs:
         run: |
           mkdir -p data
           BBOX="${{ inputs.bbox }}"
-          echo "Cutting a box of England: $BBOX"
-          # the county files are not being served right now, so take all of England and cut our box out of it
-          curl -fL -o data/england.osm.pbf "https://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf" || {
-            echo "--- England file also failed. Server answer:"
-            curl -sI "https://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf" | head -12
-            exit 1
-          }
+          echo "Cutting a box: $BBOX"
+          CANDIDATES="
+          https://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf
+          https://download.geofabrik.de/europe/great-britain-latest.osm.pbf
+          http://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf
+          https://download.openstreetmap.fr/extracts/europe/great_britain/england.osm.pbf
+          https://download.openstreetmap.fr/extracts/europe/great_britain.osm.pbf
+          https://download.openstreetmap.fr/extracts/europe/great_britain/england/hampshire.osm.pbf
+          https://download.bbbike.org/osm/bbbike/Southampton/Southampton.osm.pbf
+          https://download.bbbike.org/osm/bbbike/Bournemouth/Bournemouth.osm.pbf
+          "
+          GOT=""
+          for U in $CANDIDATES; do
+            CODE=$(curl -sL -o /dev/null -w "%{http_code}" -I -A "Mozilla/5.0" "$U")
+            echo "$CODE  $U"
+            if [ "$CODE" = "200" ] && [ -z "$GOT" ]; then GOT="$U"; fi
+          done
+          if [ -z "$GOT" ]; then echo "No source answered 200. Send me the lines above."; exit 1; fi
+          echo "Using: $GOT"
+          curl -fL -A "Mozilla/5.0" -o data/source.osm.pbf "$GOT"
           ls -l data
           sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
-          osmium extract -b "$BBOX" --strategy=smart -o data/region.osm.pbf data/england.osm.pbf
-          rm data/england.osm.pbf
+          osmium extract -b "$BBOX" --strategy=smart -o data/region.osm.pbf data/source.osm.pbf
+          rm data/source.osm.pbf
           ls -l data
       - name: Build the routing tiles with Valhalla
         run: |
