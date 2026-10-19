@@ -39,7 +39,7 @@ jobs:
           if [ -n "${{ inputs.source_url }}" ]; then get "${{ inputs.source_url }}" data/gb.osm.pbf && ok=1; fi
           if [ -z "$ok" ]; then
             for U in https://download.geofabrik.de/europe/great-britain-latest.osm.pbf https://download.openstreetmap.fr/extracts/europe/great_britain.osm.pbf; do
-              MB=$(check "$U"); echo "${MB:-no}  $U"
+              MB=$(check "$U" || true); echo "${MB:-no}  $U"
               if [ -n "$MB" ] && [ "$MB" -gt 500 ]; then get "$U" data/gb.osm.pbf && ok=1 && break; fi
             done
           fi
@@ -47,11 +47,11 @@ jobs:
             echo "Great Britain file not available: trying England and Wales separately"
             E=""; W=""
             for U in https://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf https://download.openstreetmap.fr/extracts/europe/great_britain/england.osm.pbf; do
-              MB=$(check "$U"); echo "${MB:-no}  $U"
+              MB=$(check "$U" || true); echo "${MB:-no}  $U"
               if [ -n "$MB" ] && [ "$MB" -gt 300 ]; then E="$U"; break; fi
             done
             for U in https://download.geofabrik.de/europe/great-britain/wales-latest.osm.pbf https://download.openstreetmap.fr/extracts/europe/great_britain/wales.osm.pbf; do
-              MB=$(check "$U"); echo "${MB:-no}  $U"
+              MB=$(check "$U" || true); echo "${MB:-no}  $U"
               if [ -n "$MB" ] && [ "$MB" -gt 30 ]; then W="$U"; break; fi
             done
             if [ -n "$E" ] && [ -n "$W" ]; then
