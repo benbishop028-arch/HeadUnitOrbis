@@ -1,45 +1,75 @@
-# Builds an offline routing pack for ONE region from free OpenStreetMap data (stage 1 test).
-# Run it from the Actions tab: choose "Build offline region pack", then Run workflow.
-# The result is the download called "region-pack" at the bottom of the finished run.
+# Builds an offline pack (routing, map, search list) for England and Wales from free OpenStreetMap data, then publishes it as a GitHub release.
+# Run it from the Actions tab: Build offline region pack > Run workflow. It takes a long time (hours). When it finishes, the release has all the files.
 name: Build offline region pack
 on:
   workflow_dispatch:
     inputs:
+      tag:
+        description: "Name of the release to publish the files to (becomes the end of the download address)"
+        default: "pack-ew"
       bbox:
-        description: "Box to cut out of England: west,south,east,north (default covers Hampshire)"
-        default: "-1.96,50.70,-0.70,51.39"
+        description: "Box cut from Great Britain: west,south,east,north (default is England and Wales)"
+        default: "-5.9,49.8,1.9,55.85"
+      source_url:
+        description: "Optional: a direct link to a Great Britain .osm.pbf, if the automatic sources fail"
+        default: ""
+permissions:
+  contents: write
 jobs:
   pack:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
       - name: Download the OpenStreetMap extract
         run: |
           mkdir -p data
           BBOX="${{ inputs.bbox }}"
           echo "Cutting a box: $BBOX"
-          CANDIDATES="
-          https://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf
-          https://download.geofabrik.de/europe/great-britain-latest.osm.pbf
-          http://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf
-          https://download.openstreetmap.fr/extracts/europe/great_britain/england.osm.pbf
-          https://download.openstreetmap.fr/extracts/europe/great_britain.osm.pbf
-          https://download.openstreetmap.fr/extracts/europe/great_britain/england/hampshire.osm.pbf
-          https://download.bbbike.org/osm/bbbike/Southampton/Southampton.osm.pbf
-          https://download.bbbike.org/osm/bbbike/Bournemouth/Bournemouth.osm.pbf
-          "
-          GOT=""
-          for U in $CANDIDATES; do
-            CODE=$(curl -sL -o /dev/null -w "%{http_code}" -I -A "Mozilla/5.0" "$U")
-            echo "$CODE  $U"
-            if [ "$CODE" = "200" ] && [ -z "$GOT" ]; then GOT="$U"; fi
-          done
-          if [ -z "$GOT" ]; then echo "No source answered 200. Send me the lines above."; exit 1; fi
-          echo "Using: $GOT"
-          curl -fL -A "Mozilla/5.0" -o data/source.osm.pbf "$GOT"
+          check() { # prints the size in MB when a link answers with a real file, else nothing
+            local h; h=$(curl -sIL -A "Mozilla/5.0" "$1" | tr -d '\r')
+            echo "$h" | head -1 | grep -q " 200" || return 1
+            echo "$h" | grep -i '^content-length:' | tail -1 | awk '{printf "%d", $2/1048576}'
+          }
+          get() { echo "Downloading $1"; curl -fL -A "Mozilla/5.0" -o "$2" "$1"; }
+          ok=""
+          if [ -n "${{ inputs.source_url }}" ]; then get "${{ inputs.source_url }}" data/gb.osm.pbf && ok=1; fi
+          if [ -z "$ok" ]; then
+            for U in https://download.geofabrik.de/europe/great-britain-latest.osm.pbf https://download.openstreetmap.fr/extracts/europe/great_britain.osm.pbf; do
+              MB=$(check "$U"); echo "${MB:-no}  $U"
+              if [ -n "$MB" ] && [ "$MB" -gt 500 ]; then get "$U" data/gb.osm.pbf && ok=1 && break; fi
+            done
+          fi
+          if [ -z "$ok" ]; then
+            echo "Great Britain file not available: trying England and Wales separately"
+            E=""; W=""
+            for U in https://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf https://download.openstreetmap.fr/extracts/europe/great_britain/england.osm.pbf; do
+              MB=$(check "$U"); echo "${MB:-no}  $U"
+              if [ -n "$MB" ] && [ "$MB" -gt 300 ]; then E="$U"; break; fi
+            done
+            for U in https://download.geofabrik.de/europe/great-britain/wales-latest.osm.pbf https://download.openstreetmap.fr/extracts/europe/great_britain/wales.osm.pbf; do
+              MB=$(check "$U"); echo "${MB:-no}  $U"
+              if [ -n "$MB" ] && [ "$MB" -gt 30 ]; then W="$U"; break; fi
+            done
+            if [ -n "$E" ] && [ -n "$W" ]; then
+              get "$E" data/england.osm.pbf; get "$W" data/wales.osm.pbf
+              sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
+              osmium merge data/england.osm.pbf data/wales.osm.pbf -o data/gb.osm.pbf
+              rm data/england.osm.pbf data/wales.osm.pbf
+              ok=1
+            fi
+          fi
+          if [ -z "$ok" ]; then
+            echo "No source for England and Wales answered. Re-run with a direct link in the source_url box."
+            exit 1
+          fi
           ls -l data
           sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
-          osmium extract -b "$BBOX" --strategy=smart -o data/region.osm.pbf data/source.osm.pbf
-          rm data/source.osm.pbf
+          osmium extract -b "$BBOX" --strategy=smart -o data/region.osm.pbf data/gb.osm.pbf
+          rm data/gb.osm.pbf
           ls -l data
       - name: Build the routing tiles with Valhalla
         run: |
@@ -99,7 +129,7 @@ jobs:
       - name: Build the offline map (planetiler)
         continue-on-error: true
         run: |
-          docker run --rm -e JAVA_TOOL_OPTIONS="-Xmx6g" -v "$PWD/data:/data" ghcr.io/onthegomap/planetiler:latest \
+          docker run --rm -e JAVA_TOOL_OPTIONS="-Xmx10g" -v "$PWD/data:/data" ghcr.io/onthegomap/planetiler:latest \
             --osm-path=/data/region.osm.pbf --output=/data/map.pmtiles --download --download_dir=/data/sources \
             --force --maxzoom=14 --fetch-wikidata=false
           ls -l data/map.pmtiles
@@ -116,13 +146,14 @@ jobs:
           done
           (cd fontout && zip -qr ../data/fonts.zip .)
           ls -l data/fonts.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: region-pack
-          path: |
-            data/tiles.tar
-            data/admins.sqlite
-            data/valhalla.json
-            data/places.tsv
-            data/map.pmtiles
-            data/fonts.zip
+      - name: Publish everything as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag }}"
+          FILES=""
+          for f in tiles.tar admins.sqlite valhalla.json places.tsv map.pmtiles fonts.zip; do [ -f "data/$f" ] && FILES="$FILES data/$f"; done
+          ls -l $FILES
+          gh release create "$TAG" --repo "${{ github.repository }}" --title "$TAG" --notes "Offline pack for the head unit launcher" 2>/dev/null || true
+          gh release upload "$TAG" $FILES --repo "${{ github.repository }}" --clobber
+          echo "Download address: https://github.com/${{ github.repository }}/releases/download/$TAG"
