@@ -208,6 +208,30 @@ jobs:
           LC_ALL=C sort -S 2G -T data data/lamps.unsorted > data/lamps.tsv
           rm -f data/lamps.unsorted data/lamps.osm.pbf data/lamps.geojsonseq
           ls -l data/lamps.tsv
+      - name: Build traffic signal list
+        run: |
+          osmium tags-filter data/region.osm.pbf n/highway=traffic_signals -o data/signals.osm.pbf --overwrite
+          osmium export data/signals.osm.pbf -f geojsonseq --geometry-types=point -o data/signals.geojsonseq --overwrite
+          python3 - <<'PY'
+          import json, math
+          n = 0
+          with open("data/signals.geojsonseq", encoding="utf-8") as f, open("data/signals.unsorted", "w") as o:
+              for line in f:
+                  line = line.lstrip("\x1e").strip()
+                  if not line: continue
+                  try:
+                      lon, lat = json.loads(line)["geometry"]["coordinates"]
+                  except Exception:
+                      continue
+                  x = min(32767, max(0, int((lon + 180.0) / 360.0 * 32768)))
+                  r = math.radians(lat)
+                  y = min(32767, max(0, int((1.0 - math.log(math.tan(r) + 1.0 / math.cos(r)) / math.pi) / 2.0 * 32768)))
+                  o.write("%05d%05d\t%.6f\t%.6f\n" % (y, x, lat, lon)); n += 1
+          print("signals:", n)
+          PY
+          LC_ALL=C sort -S 1G -T data data/signals.unsorted > data/signals.tsv
+          rm -f data/signals.unsorted data/signals.osm.pbf data/signals.geojsonseq
+          ls -l data/signals.tsv
       - name: Build the offline map (planetiler)
         if: ${{ inputs.parts == 'everything' }}
         continue-on-error: true
@@ -242,7 +266,7 @@ jobs:
             fi
           done
           FILES=""
-          for f in data/tiles.tar data/tiles.tar.part* data/admins.sqlite data/valhalla.json data/places.tsv data/map.pmtiles data/fonts.zip data/addresses.tsv data/addresses.tsv.part* data/postcodes.tsv data/lamps.tsv; do [ -f "$f" ] && FILES="$FILES $f"; done
+          for f in data/tiles.tar data/tiles.tar.part* data/admins.sqlite data/valhalla.json data/places.tsv data/map.pmtiles data/fonts.zip data/addresses.tsv data/addresses.tsv.part* data/postcodes.tsv data/lamps.tsv data/signals.tsv; do [ -f "$f" ] && FILES="$FILES $f"; done
           ls -l $FILES
           gh release create "$TAG" --repo "${{ github.repository }}" --title "$TAG" --notes "Offline pack for the head unit launcher" 2>/dev/null || true
           gh release upload "$TAG" $FILES --repo "${{ github.repository }}" --clobber
